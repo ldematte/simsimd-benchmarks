@@ -1,8 +1,12 @@
 #include <benchmark/benchmark.h>
 #include <numkong/numkong.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <memory>
+#include <numeric>
 #include <random>
+#include <unordered_map>
 #include <vector>
 
 // ---------------------------------------------------------------------------
