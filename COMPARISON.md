@@ -17,7 +17,7 @@ due to the call overhead.
 
 For the first experiment, we designed a benchmark which calls one of the native kernels (`vec_dotf32`)
  via FFM with different arena types. The `size=1` case isolates the pure FFM overhead (a 1-float dot
-product is essentially a no-op on the native side).
+product is essentially a no-op on the native side). For x64, the numbers are:
 
 | Benchmark          | size=1 (ns)       | size=768 (ns)      | size=1024 (ns)     |
 |--------------------|-------------------|--------------------|--------------------|
@@ -28,12 +28,12 @@ product is essentially a no-op on the native side).
 
 Some notes:
 
-1. **Confined arena downcall overhead: ~5 ns.** This is the pure FFM cost:
+- **Confined arena downcall overhead: ~5 ns.** This is the pure FFM cost:
    downcall stub entry, argument marshalling (MemorySegment → raw pointer),
    native `call`, and return. Note the tiny error bars (± 0.147 ns) — there's
    no data-dependent variability at size=1.
 
-2. **Shared arena downcall overhead: ~11.6 ns.** Over 2× the confined cost.
+- **Shared arena downcall overhead: ~11.6 ns.** Over 2× the confined cost.
    The extra **~6.5 ns** is the shared arena liveness check — a
    `lock cmpxchg` (CAS) the JVM emits on each downcall with a shared segment
    to ensure the arena hasn't been closed by another thread. Even uncontended,
@@ -44,10 +44,27 @@ Some notes:
   the JVM's arena liveness check logic wrapping the CAS: loading the state, branching on the result, etc.
   For comparison, the entire confined downcall (5 ns ≈ 18.5 cycles) fits in fewer cycles than just the shared segment's CAS
   overhead alone.
+  
 
-3. **At larger sizes, the delta is masked by noise.** The load bandwidth
-   variability (bimodal iteration times from thermal throttling) overwhelms
-   the fixed 6.5 ns difference. But the overhead is still there.
+The ratios are almost identical on ARM (Graviton 4):
+
+| Benchmark          | size=1 (ns)        | size=768 (ns)      | size=1024 (ns)     |
+|--------------------|--------------------|--------------------|---------------------|
+| confinedSegment    | **9.898 ± 0.109**  | 57.506 ± 1.022     | 74.570 ± 0.546      |
+| sharedSegment      | **22.978 ± 0.037** | 71.748 ± 0.879     | 86.651 ± 1.037      |
+| delta (shared−conf)| **+13.08 ns**      | +14.24 ns          | +12.08 ns           |
+
+
+- ARM (Graviton 4) vector scoring times are between 2-2.8x higher than x64 (AMD Zen5)
+- The confined baseline (~10 ns vs ~5 ns) is also ~2× — JVM downcall stub cost
+  scales roughly with cycle time (Graviton 4 runs at ~3.5 GHz vs Zen 5 ~3.7 GHz,
+  but the difference is largely in the stub's code path length on AArch64 vs x86).
+- The shared arena CAS penalty (~13 ns vs ~6.5 ns) is also ~2× — the ARM
+  `ldxr`/`stxr` (LL/SC) atomic pair seems more expensive than x86's
+  `lock cmpxchg`, especially for the full-barrier semantics required.
+
+
+On both processors, **at larger sizes, the delta is masked by noise.** The load bandwidth variability overwhelms the fixed difference. But the overhead is still there.
 
 ### Breakdown of the total cost (confined arena path)
 
@@ -88,7 +105,18 @@ same operation).
 
 ### Multi-vector i8, 1024 dims, random access, bulkSize=32
 
-(To be filled after multi-vector benchmarks complete)
+ES Bulk vs NK loop (ns/vec):
+
+| Dataset | ES Bulk dot | NK dot | ES/NK | ES Bulk sqe | NK sqe | ES/NK | ES Bulk cos | NK cos | ES/NK |
+|---|---|---|---|---|---|---|---|---|---|
+| 128 (L2) | 11.2 | 55.3 | **4.94x** | 14.2 | 104.7 | **7.37x** | 12.7 | 78.9 | **6.21x** |
+| 2500 (L3) | 15.5 | 69.6 | **4.49x** | 17.4 | 116.0 | **6.67x** | 16.5 | 86.5 | **5.24x** |
+| 130000 (>L3) | 39.9 | 174.2 | **4.37x** | 42.2 | 218.0 | **5.17x** | 37.7 | 196.4 | **5.21x** |
+
+Bulk operations gives good benefits on AMD; at 1024 dims it maintains the same advantage over NK for square distance and dot product,
+and gives a good 2x boost to cosine. 
+Prefetching + batch processing help keeping timings down despite cache misses: ES Bulk at high dataset sizes (>L3) is 
+**faster than single-pair NK** (39.9 ns/vec vs 49.9 ns/vec), despite cache misses!
 
 ## Intel (c8i.2xlarge, Sapphire Rapids, AVX-512)
 
@@ -112,7 +140,16 @@ due to Sapphire Rapids' AVX-512 frequency throttling.
 
 ### Multi-vector i8, 1024 dims, random access, bulkSize=32
 
-(To be filled after multi-vector benchmarks complete)
+ES Bulk vs NK loop (ns/vec):
+
+| Dataset | ES Bulk dot | NK dot | ES/NK | ES Bulk sqe | NK sqe | ES/NK | ES Bulk cos | NK cos | ES/NK |
+|---|---|---|---|---|---|---|---|---|---|
+| 128 (L2) | 22.4 | 62.5 | **2.79x** | 28.5 | 108.2 | **3.80x** | 21.1 | 110.3 | **5.23x** |
+| 2500 (L3) | 38.8 | 88.0 | **2.27x** | 42.2 | 130.2 | **3.09x** | 38.2 | 131.2 | **3.44x** |
+| 130000 (in L3!) | 58.1 | 99.9 | **1.72x** | 64.4 | 141.6 | **2.20x** | 55.2 | 140.5 | **2.54x** |
+
+ES bulk wins on Intel too — **1.7-5.2x faster**. The advantage is smaller at 130k
+because Intel's 480 MB L3 cache holds the entire dataset, reducing the prefetching benefit.
 
 ## ARM (c8gd.xlarge, Graviton 4, NEON+SDOT)
 
@@ -160,10 +197,10 @@ cannot match.
    NK wins at small dims (zero FFI overhead), ES catches up at 1536+ dims. The gap
    is primarily FFI call overhead (~5-11 ns per call).
 
-3. **Bulk operations are the differentiator on ARM.** ES bulk wins 1.3-1.8x over NK loop
+3. **Bulk operations are worth it**: on ARM, ES bulk wins 1.3-1.8x over NK loop
    across all dataset sizes. The advantage comes from batch processing (4 vectors at a
-   time) providing memory-level parallelism.
+   time) providing memory-level parallelism via the interleaved access pattern. 
+   On x86, ES bulk is 4-7x faster than NK loop on AMD, and 1.7-5.2x faster on Intel. The combination of AVX-512 kernels +
+   explicit prefetching + batch processing makes ES bulk operations **with cache misses** faster than NK single-pair scoring (no cache misses); for dot product, ES SimdVec takes 39.9 ns/vec (130k random, DRAM latency) vs NumKong 49.9 ns/vec (single-pair, in L1): ES with cold data beats NK with hot data.
 
-4. Despite running from Java with FFI overhead, ES SimdVec's optimized kernels
-   (AVX-512, cascade unrolling, Clang 21) and bulk operations outperform a native C
-   library (NumKong) that lacks these optimizations.
+Despite running from Java with FFI overhead, ES SimdVec's optimized kernels (AVX-512, cascade unrolling, bulk operations) outperform a native C library (NumKong) that lacks these optimizations.
