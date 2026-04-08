@@ -113,10 +113,10 @@ ES Bulk vs NK loop (ns/vec):
 | 2500 (L3) | 15.5 | 69.6 | **4.49x** | 17.4 | 116.0 | **6.67x** | 16.5 | 86.5 | **5.24x** |
 | 130000 (>L3) | 39.9 | 174.2 | **4.37x** | 42.2 | 218.0 | **5.17x** | 37.7 | 196.4 | **5.21x** |
 
-Bulk operations gives good benefits on AMD; at 1024 dims it maintains the same advantage over NK for square distance and dot product,
-and gives a good 2x boost to cosine. 
+Bulk operations give good benefits on AMD; at 1024 dims they maintain the same advantage over NK for square distance and dot product,
+and give a good 2x boost to cosine.
 Prefetching + batch processing help keeping timings down despite cache misses: ES Bulk at high dataset sizes (>L3) is 
-**faster than single-pair NK** (39.9 ns/vec vs 49.9 ns/vec), despite cache misses!
+**faster than single-pair NK** (L1), with 39.9 ns/vec vs 49.9 ns/vec.
 
 ## Intel (c8i.2xlarge, Sapphire Rapids, AVX-512)
 
@@ -135,7 +135,7 @@ ES compiled with Clang 21, libvec 1.0.87 (AVX-512 i8 kernels with cascade unroll
 | 1536 | 30.3 | 89.6 | **2.96x** | 35.3 | 160 | **4.53x** | 60.4 | 170 | **2.81x** |
 | 3072 | 54.2 | 174 | **3.21x** | 64.4 | 318 | **4.94x** | 114 | 329 | **2.89x** |
 
-Consistent wins across all dims and operations. Smaller advantage than AMD (3-5x vs 4-12x)
+Consistent wins across all dims and operations. Smaller advantage than AMD (3-5x vs 4-12x), likely 
 due to Sapphire Rapids' AVX-512 frequency throttling.
 
 ### Multi-vector i8, 1024 dims, random access, bulkSize=32
@@ -169,8 +169,7 @@ ES compiled with Clang 21, libvec 1.0.87.
 | 3072 | 61.1 | 76.6 | **1.25x** | 74.8 | 78.8 | **1.05x** | 120.7 | 114 | 0.94x |
 
 At small dims, FFI call overhead dominates and NK wins. At 1536+ dims, ES dot product
-overtakes NK. On ARM there is no AVX-512 equivalent — both ES and NK use NEON+SDOT,
-so the kernel compute is similar and the comparison reflects mainly the FFI overhead.
+overtakes NK. On ARM both ES and NK use NEON+SDOT, so the kernel compute is similar and the comparison reflects mainly the FFI overhead.
 
 ### Multi-vector i8, 1024 dims, random access, bulkSize=32
 
