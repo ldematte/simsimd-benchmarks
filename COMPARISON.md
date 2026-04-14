@@ -89,19 +89,27 @@ ES compiled with Clang 21, libvec 1.0.87 (AVX-512 i8 kernels with cascade unroll
 
 | Dims | ES dot | NK dot | ES/NK | ES sqe | NK sqe | ES/NK | ES cos | NK cos | ES/NK |
 |---|---|---|---|---|---|---|---|---|---|
-| 128 | 5.7 | 6.1 | **1.07x** | 5.8 | 10.6 | **1.83x** | 9.2 | 16.3 | **1.77x** |
-| 256 | 6.8 | 11.7 | **1.72x** | 7.0 | 21.6 | **3.09x** | 11.3 | 25.8 | **2.28x** |
-| 384 | 7.7 | 17.2 | **2.23x** | 7.8 | 33.9 | **4.35x** | 13.3 | 35.6 | **2.68x** |
-| 512 | 8.6 | 23.4 | **2.72x** | 9.1 | 45.7 | **5.02x** | 16.8 | 45.0 | **2.68x** |
-| 768 | 10.7 | 36.6 | **3.42x** | 10.9 | 73.1 | **6.71x** | 20.9 | 63.6 | **3.04x** |
-| 1024 | 12.6 | 49.9 | **3.96x** | 13.1 | 104 | **7.94x** | 25.2 | 81.7 | **3.24x** |
-| 1536 | 16.7 | 80.5 | **4.82x** | 16.8 | 165 | **9.82x** | 33.2 | 118 | **3.55x** |
-| 3072 | 30.0 | 179 | **5.97x** | 29.8 | 352 | **11.81x** | 64.9 | 229 | **3.53x** |
+| 128 | 5.7 | 2.46 | 0.43x | 5.8 | 2.51 | 0.43x | 9.2 | 6.88 | 0.75x |
+| 256 | 6.8 | 3.15 | 0.46x | 7.0 | 3.64 | 0.52x | 11.3 | 8.95 | 0.79x |
+| 384 | 7.7 | 4.08 | 0.53x | 7.8 | 5.02 | 0.64x | 13.3 | 11.1 | 0.83x |
+| 512 | 8.6 | 4.96 | 0.58x | 9.1 | 6.32 | 0.69x | 16.8 | 13.2 | 0.79x |
+| 768 | 10.7 | 6.94 | 0.65x | 10.9 | 9.51 | 0.87x | 20.9 | 18.3 | 0.88x |
+| 1024 | 12.6 | 8.67 | 0.69x | 13.1 | 12.2 | 0.93x | 25.2 | 22.9 | 0.91x |
+| 1536 | 16.7 | 14.8 | 0.89x | 16.8 | 19.9 | **1.18x** | 33.2 | 31.8 | 0.96x |
+| 3072 | 30.0 | 29.2 | 0.97x | 29.8 | 37.7 | **1.27x** | 64.9 | 60.5 | 0.93x |
 
-ES wins at every dimension, even at 128 where FFI overhead is a significant fraction.
-The sqeuclidean advantage is especially large (up to **12x**) because ES uses `abs_epi8 +
-maddubs` on AVX-512 (64 bytes/iter) while NK uses sign-extension (32 bytes/iter for the
-same operation).
+NK wins at small-to-medium dimensions on all operations thanks to zero FFI overhead
+and AVX-512 VNNI (XOR+DPBUSD, 64 bytes/iter). ES catches up at larger dimensions where
+its 4-way cascade unrolling amortizes the ~5 ns FFI cost. ES wins on sqeuclidean at
+1536+ dims. Both libraries use AVX-512; NK uses VNNI DPBUSD while ES uses
+sign-extension + madd_epi16 with cascade unrolling.
+
+At small dimensions (128-512), the gap is almost entirely call overhead: NK goes through
+a shared-library dispatch (~1 ns), ES goes through FFI (~5 ns). At 1024 dims, the kernel
+times are nearly identical (~7.6 ns ES vs ~7.7 ns NK) — the entire difference is call
+overhead. ES's cascade unrolling only starts to show a kernel-level advantage at 1536+
+dims, and for sqeuclidean it matters earlier because NK's kernel does 2x the work per
+iteration (unpack to i16 + two DPWSSDs vs ES's single madd_epi16).
 
 ### Multi-vector i8, 1024 dims, random access, bulkSize=32
 
@@ -109,34 +117,33 @@ ES Bulk vs NK loop (ns/vec):
 
 | Dataset | ES Bulk dot | NK dot | ES/NK | ES Bulk sqe | NK sqe | ES/NK | ES Bulk cos | NK cos | ES/NK |
 |---|---|---|---|---|---|---|---|---|---|
-| 128 (L2) | 11.2 | 55.3 | **4.94x** | 14.2 | 104.7 | **7.37x** | 12.7 | 78.9 | **6.21x** |
-| 2500 (L3) | 15.5 | 69.6 | **4.49x** | 17.4 | 116.0 | **6.67x** | 16.5 | 86.5 | **5.24x** |
-| 130000 (>L3) | 39.9 | 174.2 | **4.37x** | 42.2 | 218.0 | **5.17x** | 37.7 | 196.4 | **5.21x** |
+| 128 (L2) | 11.2 | 13.8 | **1.23x** | 14.2 | 17.8 | **1.25x** | 12.7 | 24.2 | **1.91x** |
+| 2500 (L3) | 15.5 | 20.4 | **1.32x** | 17.4 | 23.8 | **1.37x** | 16.5 | 30.4 | **1.84x** |
+| 130000 (>L3) | 39.9 | 62.5 | **1.57x** | 42.2 | 83.1 | **1.97x** | 37.7 | 114.6 | **3.04x** |
 
-Bulk operations give good benefits on AMD; at 1024 dims they maintain the same advantage over NK for square distance and dot product,
-and give a good 2x boost to cosine.
-Prefetching + batch processing help keeping timings down despite cache misses: ES Bulk at high dataset sizes (>L3) is 
-**faster than single-pair NK** (L1), with 39.9 ns/vec vs 49.9 ns/vec.
+ES bulk wins across the board on AMD, with the advantage growing at larger dataset
+sizes. The combination of batch processing + explicit prefetching hides memory latency
+that a loop of single-pair calls cannot.
 
-## Intel (c8i.2xlarge, Sapphire Rapids, AVX-512)
+## Intel (c8i.2xlarge, Granite Rapids, AVX-512)
 
 ES compiled with Clang 21, libvec 1.0.87 (AVX-512 i8 kernels with cascade unrolling).
 
 ### Single-pair i8 (ns/op)
 
-| Dims | ES dot | NK dot | ES/NK | ES sqe | NK sqe | ES/NK | ES cos | NK cos | ES/NK |
-|---|---|---|---|---|---|---|---|---|---|
-| 128 | 8.4 | 7.7 | 0.92x | 8.7 | 13.7 | **1.57x** | 12.1 | 21.1 | **1.74x** |
-| 256 | 9.9 | 14.6 | **1.47x** | 10.2 | 26.7 | **2.62x** | 17.2 | 35.6 | **2.07x** |
-| 384 | 11.4 | 21.6 | **1.89x** | 11.8 | 39.8 | **3.37x** | 20.2 | 51.3 | **2.54x** |
-| 512 | 12.8 | 31.2 | **2.44x** | 15.0 | 53.1 | **3.54x** | 24.3 | 64.7 | **2.66x** |
-| 768 | 16.7 | 46.9 | **2.81x** | 18.7 | 81.1 | **4.34x** | 35.9 | 91.7 | **2.55x** |
-| 1024 | 21.1 | 61.2 | **2.90x** | 25.1 | 107 | **4.26x** | 45.5 | 118 | **2.59x** |
-| 1536 | 30.3 | 89.6 | **2.96x** | 35.3 | 160 | **4.53x** | 60.4 | 170 | **2.81x** |
-| 3072 | 54.2 | 174 | **3.21x** | 64.4 | 318 | **4.94x** | 114 | 329 | **2.89x** |
+| Dims | ES dot | NK dot | ES/NK | ES sqe | NK sqe | ES/NK |
+|---|---|---|---|---|---|---|
+| 128 | 8.4 | 3.88 | 0.46x | 8.7 | 3.80 | 0.44x |
+| 256 | 9.9 | 5.56 | 0.56x | 10.2 | 6.40 | 0.63x |
+| 384 | 11.4 | 6.82 | 0.60x | 11.8 | 8.87 | 0.75x |
+| 512 | 12.8 | 8.49 | 0.66x | 15.0 | 11.5 | 0.77x |
+| 768 | 16.7 | 14.0 | 0.84x | 18.7 | 17.1 | 0.91x |
+| 1024 | 21.1 | 15.9 | 0.75x | 25.1 | 21.5 | 0.86x |
+| 1536 | 30.3 | 26.1 | 0.86x | 35.3 | 31.7 | 0.90x |
+| 3072 | 54.2 | 51.6 | 0.95x | 64.4 | 66.2 | **1.03x** |
 
-Consistent wins across all dims and operations. Smaller advantage than AMD (3-5x vs 4-12x), likely 
-due to Sapphire Rapids' AVX-512 frequency throttling.
+Angular not yet collected on Intel. Similar pattern to AMD — NK wins at all dimensions
+for dot, ES only overtakes on sqeuclidean at 3072.
 
 ### Multi-vector i8, 1024 dims, random access, bulkSize=32
 
@@ -144,12 +151,15 @@ ES Bulk vs NK loop (ns/vec):
 
 | Dataset | ES Bulk dot | NK dot | ES/NK | ES Bulk sqe | NK sqe | ES/NK | ES Bulk cos | NK cos | ES/NK |
 |---|---|---|---|---|---|---|---|---|---|
-| 128 (L2) | 22.4 | 62.5 | **2.79x** | 28.5 | 108.2 | **3.80x** | 21.1 | 110.3 | **5.23x** |
-| 2500 (L3) | 38.8 | 88.0 | **2.27x** | 42.2 | 130.2 | **3.09x** | 38.2 | 131.2 | **3.44x** |
-| 130000 (in L3!) | 58.1 | 99.9 | **1.72x** | 64.4 | 141.6 | **2.20x** | 55.2 | 140.5 | **2.54x** |
+| 128 (L2) | 22.4 | 18.6 | 0.83x | 28.5 | 25.2 | 0.88x | 21.1 | 48.7 | **2.31x** |
+| 2500 (L3) | 38.8 | 38.4 | 0.99x | 42.2 | 52.0 | **1.23x** | 38.2 | 70.8 | **1.85x** |
+| 130000 (in L3) | 58.1 | 51.9 | 0.89x | 64.4 | 67.2 | **1.04x** | 55.2 | 85.7 | **1.55x** |
 
-ES bulk wins on Intel too — **1.7-5.2x faster**. The advantage is smaller at 130k
-because Intel's 480 MB L3 cache holds the entire dataset, reducing the prefetching benefit.
+On Intel, ES bulk shows less advantage than on AMD — NK's dot loop matches or beats
+ES bulk across dataset sizes. The 480 MB L3 holds the entire 130k dataset, reducing
+the prefetching benefit that drives ES bulk's advantage on AMD. ES bulk still wins
+on cosine and sqeuclidean. The ES bulk absolute times on Intel are notably higher than
+on AMD (e.g. 22.4 vs 11.2 ns/vec at L2 for dot) — this gap needs further investigation.
 
 ## ARM (c8gd.xlarge, Graviton 4, NEON+SDOT)
 
@@ -159,17 +169,20 @@ ES compiled with Clang 21, libvec 1.0.87.
 
 | Dims | ES dot | NK dot | ES/NK | ES sqe | NK sqe | ES/NK | ES cos | NK cos | ES/NK |
 |---|---|---|---|---|---|---|---|---|---|
-| 128 | 11.1 | 3.9 | 0.35x | 11.1 | 3.9 | 0.35x | 14.4 | 9.4 | 0.65x |
-| 256 | 13.1 | 6.8 | 0.52x | 13.2 | 6.8 | 0.52x | 18.1 | 15.3 | 0.85x |
-| 384 | 15.2 | 10.0 | 0.66x | 15.1 | 10.0 | 0.66x | 22.0 | 19.8 | 0.90x |
-| 512 | 17.2 | 12.9 | 0.75x | 17.4 | 12.9 | 0.74x | 30.0 | 26.4 | 0.88x |
-| 768 | 21.4 | 18.6 | 0.87x | 26.7 | 18.6 | 0.70x | 39.4 | 35.9 | 0.91x |
-| 1024 | 27.2 | 24.3 | 0.89x | 31.9 | 24.6 | 0.77x | 47.2 | 44.3 | 0.94x |
-| 1536 | 35.4 | 40.7 | **1.15x** | 41.0 | 37.0 | 0.90x | 63.9 | 59.8 | 0.94x |
-| 3072 | 61.1 | 76.6 | **1.25x** | 74.8 | 78.8 | **1.05x** | 120.7 | 114 | 0.94x |
+| 128 | 11.1 | 5.01 | 0.45x | 11.1 | 6.01 | 0.54x | 14.4 | 8.24 | 0.57x |
+| 256 | 13.1 | 7.87 | 0.60x | 13.2 | 10.2 | 0.77x | 18.1 | 13.2 | 0.73x |
+| 384 | 15.2 | 11.1 | 0.73x | 15.1 | 14.4 | 0.95x | 22.0 | 18.2 | 0.83x |
+| 512 | 17.2 | 15.5 | 0.90x | 17.4 | 16.7 | 0.96x | 30.0 | 23.5 | 0.78x |
+| 768 | 21.4 | 24.6 | **1.15x** | 26.7 | 24.1 | 0.90x | 39.4 | 33.8 | 0.86x |
+| 1024 | 27.2 | 32.5 | **1.20x** | 31.9 | 32.2 | **1.01x** | 47.2 | 42.4 | 0.90x |
+| 1536 | 35.4 | 49.3 | **1.39x** | 41.0 | 49.0 | **1.20x** | 63.9 | 60.0 | 0.94x |
+| 3072 | 61.1 | 111 | **1.82x** | 74.8 | 107 | **1.43x** | 120.7 | 116 | 0.96x |
 
-At small dims, FFI call overhead dominates and NK wins. At 1536+ dims, ES dot product
-overtakes NK. On ARM both ES and NK use NEON+SDOT, so the kernel compute is similar and the comparison reflects mainly the FFI overhead.
+NK wins at small dims (lower call overhead). ES overtakes on dot at 768+ dims and on
+sqeuclidean at 1024+ dims. The shared library dispatch overhead on ARM (~5-8 ns) is
+larger than on x86 (~1 ns), which shifts the crossover point. Both libraries use
+NEON+SDOT, so at large dims ES's cascade unrolling gives a genuine kernel advantage
+(up to 1.8x at 3072).
 
 ### Multi-vector i8, 1024 dims, random access, bulkSize=32
 
@@ -177,29 +190,29 @@ ES Bulk vs NK loop (ns/vec):
 
 | Dataset | ES Bulk dot | NK dot | ES/NK | ES Bulk sqe | NK sqe | ES/NK | ES Bulk cos | NK cos | ES/NK |
 |---|---|---|---|---|---|---|---|---|---|
-| 128 (L2) | 17.8 | 24.7 | **1.39x** | 22.0 | 28.6 | **1.30x** | 26.8 | 47.1 | **1.76x** |
-| 2500 (L3) | 28.1 | 41.7 | **1.48x** | 34.4 | 46.8 | **1.36x** | 38.1 | 58.1 | **1.53x** |
-| 130000 (>L3) | 48.4 | 68.7 | **1.42x** | 52.7 | 74.2 | **1.41x** | 61.0 | 88.2 | **1.45x** |
+| 128 (L2) | 17.8 | 32.8 | **1.84x** | 22.0 | 35.5 | **1.61x** | 26.8 | 48.1 | **1.80x** |
+| 2500 (L3) | 28.1 | 48.1 | **1.71x** | 34.4 | 48.8 | **1.42x** | 38.1 | 62.1 | **1.63x** |
+| 130000 (>L3) | 48.4 | 89.6 | **1.85x** | 52.7 | 93.7 | **1.78x** | 61.0 | 99.9 | **1.64x** |
 
-ES bulk wins across the board on ARM — 1.3-1.8x faster. The interleaved bulk pattern
+ES bulk wins 1.4-1.9x across all ops and dataset sizes. The interleaved bulk pattern
 with 4 concurrent vectors provides memory-level parallelism that a single-call loop
 cannot match.
 
 
 ## Key Takeaways
 
-1. **On x86 with AVX-512, ES SimdVec dominates at every dimension.** Even at 128 dims
-   with FFI overhead, ES is faster on AMD. The advantage grows with dimension size:
-   up to **6x for dot, 12x for sqeuclidean, 3.5x for cosine** on AMD at 3072 dims.
+1. **On x86 single-pair, NK is faster at small-to-medium dimensions** thanks to
+   AVX-512 VNNI (XOR+DPBUSD) and lower call overhead (~1 ns shared lib dispatch vs
+   ~5 ns ES FFI). ES catches up at larger dimensions where cascade unrolling amortizes
+   the FFI cost. At 1024 dims the kernel times are nearly identical — the gap is
+   almost entirely call overhead.
 
-2. **On ARM, single-pair kernel performance is close.** Both ES and NK use NEON+SDOT.
-   NK wins at small dims (zero FFI overhead), ES catches up at 1536+ dims. The gap
-   is primarily FFI call overhead (~5-11 ns per call).
+2. **On ARM single-pair, NK wins at small dims, ES wins at 768+.** The shared library
+   dispatch overhead on ARM (~5-8 ns) is larger than on x86, shifting the crossover.
+   At large dims, ES's cascade unrolling gives a genuine kernel advantage (up to 1.8x
+   at 3072).
 
-3. **Bulk operations are worth it**: on ARM, ES bulk wins 1.3-1.8x over NK loop
-   across all dataset sizes. The advantage comes from batch processing (4 vectors at a
-   time) providing memory-level parallelism via the interleaved access pattern. 
-   On x86, ES bulk is 4-7x faster than NK loop on AMD, and 1.7-5.2x faster on Intel. The combination of AVX-512 kernels +
-   explicit prefetching + batch processing makes ES bulk operations **with cache misses** faster than NK single-pair scoring (no cache misses); for dot product, ES SimdVec takes 39.9 ns/vec (130k random, DRAM latency) vs NumKong 49.9 ns/vec (single-pair, in L1): ES with cold data beats NK with hot data.
-
-Despite running from Java with FFI overhead, ES SimdVec's optimized kernels (AVX-512, cascade unrolling, bulk operations) outperform a native C library (NumKong) that lacks these optimizations.
+3. **Bulk operations are where ES consistently wins**: on AMD 1.2-3x, on ARM 1.4-1.9x.
+   NK has no bulk API, so its loop of single-pair calls cannot hide memory latency. On
+   Intel, the 480 MB L3 holds the dataset, so NK's single-pair loop keeps up on dot —
+   but ES bulk still wins on cosine and sqeuclidean.
