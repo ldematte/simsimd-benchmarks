@@ -88,28 +88,28 @@ ES compiled with Clang 21, libvec 1.0.87 (AVX-512 i8 kernels with cascade unroll
 ### Single-pair i8 (ns/op)
 
 | Dims | ES dot | NK dot | ES/NK | ES sqe | NK sqe | ES/NK | ES cos | NK cos | ES/NK |
-|---|---|---|---|---|---|---|---|---|---|
-| 128 | 5.7 | 2.46 | 0.43x | 5.8 | 2.51 | 0.43x | 9.2 | 6.88 | 0.75x |
-| 256 | 6.8 | 3.15 | 0.46x | 7.0 | 3.64 | 0.52x | 11.3 | 8.95 | 0.79x |
-| 384 | 7.7 | 4.08 | 0.53x | 7.8 | 5.02 | 0.64x | 13.3 | 11.1 | 0.83x |
-| 512 | 8.6 | 4.96 | 0.58x | 9.1 | 6.32 | 0.69x | 16.8 | 13.2 | 0.79x |
-| 768 | 10.7 | 6.94 | 0.65x | 10.9 | 9.51 | 0.87x | 20.9 | 18.3 | 0.88x |
-| 1024 | 12.6 | 8.67 | 0.69x | 13.1 | 12.2 | 0.93x | 25.2 | 22.9 | 0.91x |
-| 1536 | 16.7 | 14.8 | 0.89x | 16.8 | 19.9 | **1.18x** | 33.2 | 31.8 | 0.96x |
-| 3072 | 30.0 | 29.2 | 0.97x | 29.8 | 37.7 | **1.27x** | 64.9 | 60.5 | 0.93x |
+|---|--------|---|-------|---|---|---|---|---|---|
+| 128 | 5.7    | 2.46 | 0.43x | 5.8 | 2.51 | 0.43x | 9.2 | 6.88 | 0.75x |
+| 256 | 6.8    | 3.15 | 0.46x | 7.0 | 3.64 | 0.52x | 11.3 | 8.95 | 0.79x |
+| 384 | 7.7    | 4.08 | 0.53x | 7.8 | 5.02 | 0.64x | 13.3 | 11.1 | 0.83x |
+| 512 | 8.6    | 4.96 | 0.58x | 9.1 | 6.32 | 0.69x | 16.8 | 13.2 | 0.79x |
+| 768 | 10.7   | 6.94 | 0.65x | 10.9 | 9.51 | 0.87x | 20.9 | 18.3 | 0.88x |
+| 1024 | 12.1   | 8.67 | 0.72x | 13.1 | 12.2 | 0.93x | 25.2 | 22.9 | 0.91x |
+| 1536 | 16.7   | 14.8 | 0.89x | 16.8 | 19.9 | **1.18x** | 33.2 | 31.8 | 0.96x |
+| 3072 | 30.0   | 29.2 | 0.97x | 29.8 | 37.7 | **1.27x** | 64.9 | 60.5 | 0.93x |
 
 NK wins at small-to-medium dimensions on all operations thanks to zero FFI overhead
 and AVX-512 VNNI (XOR+DPBUSD, 64 bytes/iter). ES catches up at larger dimensions where
 its 4-way cascade unrolling amortizes the ~5 ns FFI cost. ES wins on sqeuclidean at
-1536+ dims. Both libraries use AVX-512; NK uses VNNI DPBUSD while ES uses
-sign-extension + madd_epi16 with cascade unrolling.
+1536+ dims. Both libraries use AVX-512 VNNI DPBUSD for dot; ES adds 4-way cascade
+unrolling and precomputes the query correction term in the bulk path.
 
 At small dimensions (128-512), the gap is almost entirely call overhead: NK goes through
 a shared-library dispatch (~1 ns), ES goes through FFI (~5 ns). At 1024 dims, the kernel
-times are nearly identical (~7.6 ns ES vs ~7.7 ns NK) — the entire difference is call
-overhead. ES's cascade unrolling only starts to show a kernel-level advantage at 1536+
-dims, and for sqeuclidean it matters earlier because NK's kernel does 2x the work per
-iteration (unpack to i16 + two DPWSSDs vs ES's single madd_epi16).
+times are nearly identical (~7.1 ns ES vs ~7.7 ns NK) — the difference is almost entirely
+call overhead. ES's cascade unrolling only starts to show a kernel-level advantage at
+1536+ dims, and for sqeuclidean it matters earlier because NK's kernel does 2x the work
+per iteration (unpack to i16 + two DPWSSDs vs ES's single madd_epi16).
 
 ### Multi-vector i8, 1024 dims, random access, bulkSize=32
 
@@ -117,9 +117,9 @@ ES Bulk vs NK loop (ns/vec):
 
 | Dataset | ES Bulk dot | NK dot | ES/NK | ES Bulk sqe | NK sqe | ES/NK | ES Bulk cos | NK cos | ES/NK |
 |---|---|---|---|---|---|---|---|---|---|
-| 128 (L2) | 11.2 | 13.8 | **1.23x** | 14.2 | 17.8 | **1.25x** | 12.7 | 24.2 | **1.91x** |
-| 2500 (L3) | 15.5 | 20.4 | **1.32x** | 17.4 | 23.8 | **1.37x** | 16.5 | 30.4 | **1.84x** |
-| 130000 (>L3) | 39.9 | 62.5 | **1.57x** | 42.2 | 83.1 | **1.97x** | 37.7 | 114.6 | **3.04x** |
+| 128 (L2) | 11.8 | 13.8 | **1.17x** | 14.2 | 17.8 | **1.25x** | 12.7 | 24.2 | **1.91x** |
+| 2500 (L3) | 15.3 | 20.4 | **1.33x** | 17.4 | 23.8 | **1.37x** | 16.5 | 30.4 | **1.84x** |
+| 130000 (>L3) | 33.0 | 62.5 | **1.89x** | 42.2 | 83.1 | **1.97x** | 37.7 | 114.6 | **3.04x** |
 
 ES bulk wins across the board on AMD, with the advantage growing at larger dataset
 sizes. The combination of batch processing + explicit prefetching hides memory latency
